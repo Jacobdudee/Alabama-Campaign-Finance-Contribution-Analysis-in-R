@@ -1,0 +1,572 @@
+---
+title: "Presidential Campaign Contributions in Alabama 2016"
+author: "Jacob Dodd"
+date: "11/19/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Measuring Presidential Campgain Contributions from the 2016 cycle from Alabama
+
+I seek to analyze campgain contributions to different presidential campgaingns diring the 2016 presidential election cycle from Alabama. Data was downloaded from http://classic.fec.gov/disclosurep/PDownload.do. 
+
+Importing relevant Libraries
+```{r}
+rm(list=ls())
+#setwd("/Users/jacobdodd/Desktop")
+
+library(skimr)
+library(ggplot2)
+library(dplyr)
+library(reshape2)
+library(data.table)
+library(lubridate)
+library(knitr)
+library(tidyr)
+library(RColorBrewer)
+
+```
+
+### Loading the dataset and first look
+```{r}
+AL <- fread("ALP2016.csv",sep = ",",data.table = TRUE,stringsAsFactors = FALSE)
+
+#Starting data input on line 2 and discarding line 1 because it has too few or too many items to #be column names or data: 
+names = c("cmte_id","cand_id","cand_nm","contbr_nm","contbr_city","contbr_st","contbr_zip","contbr_employer","contbr_occupation","contb_receipt_amt","contb_receipt_dt","receipt_desc","memo_cd","memo_text","form_tp","file_num","tran_id","election_tp")
+
+#fread mistakenly loaded a 19th column when there are only 18, so I have to drop it before reassigning variable names.
+AL$V19 <- NULL
+
+#reassigning names
+colnames(AL) <- names
+rm(names)
+skim(AL)
+```
+
+# Data Review and Cleaning
+Some variables that jumped out to me:
+- Committee ID
+- Candidate ID
+- Candidate Name
+- Conbritor City
+- Contrib. Zip
+- Contrib. Occupation
+- Receipt Amount
+- Recepit Date
+- Election Type
+
+It will interesting to do some exploration of giving amounts and counts over time, as well as some spatial potting. Another thing that could be possible is analyze different attributes (city, occupation, etc.) of contributors, and see if there are any common features. 
+
+There are some columns which may not provide much insight:
+-receipt description
+- memo code
+- memo text
+- contbr state (all values are from AL)
+- contrib. employer (I am doubtful there are enough insightful values for each of the 55000 rows)
+- Contr. Name (these should be used to create IDs, then be removed, to de-identify the rows) If anything, I can use these to  create a contributor ID to do some analysis on how many contributions the average Alabaman gave
+- form type (not sure what this represents)
+- file number(not sure what this represents)
+
+There are few missing values for the columns here, the only substantial are in contributor employer. 
+
+
+Let's now look at individual column values with the table() function.
+#### - Candidate information Columns 
+```{r}
+#Committe ID, Candidate ID, and Candidate Name
+for (i in colnames(AL)[1:3]){
+  print(table(AL[[i]]))
+  print(length(unique(AL[[i]])))
+}
+```
+
+There were 23 candidates that recieved donation in this election cycle in Alabama. This database does no contain any information on candidate political party or gender. This will be added shortly.
+
+A caveat here is this candidate information only represents candidates that recieved at least one donation, so does not serve as a list of all candidates that ran for president in this cycle. 
+
+From a cursory look, looking at the candidates names via the format here is unwieldy. Let's use the last name for interpretability when doing EDA.
+
+For most of the candidates listed here, I am able to ID which party they ran in. Apparently Lessig and McMullin ran as a Democrat and Independant, respectively. 
+
+#### - Creating party name vector containing candidates
+```{r}
+#adding political party for candidates
+republican <- c("Bush, Jeb","Carson, Benjamin S.","Christie, Christopher J.","Cruz, Rafael Edward 'Ted'","Fiorina, Carly","Jindal, Bobby","Huckabee, Mike","Graham, Lindsey O.","Kasich, John R.","Perry, James R. (Rick)","Rubio, Marco","Santorum, Richard J.","Trump, Donald J.","Walker, Scott","Paul, Rand")
+
+democrat <- c("Clinton, Hillary Rodham","Sanders, Bernard","Webb, James Henry Jr.","O'Malley, Martin Joseph","Lessig, Lawrence")
+
+independ <- c("McMullin, Evan")
+
+libert <- c("Johnson, Gary")
+
+green <- c("Stein, Jill")
+
+#checking lengths so each candidate is reprented
+sum(length(republican),length(democrat),1,1,1)
+```
+
+#### - Assigning Party IDs to Candidates
+```{r}
+#creating party IDs
+AL$repub <- ifelse(AL$cand_nm %in% republican, 1, NA)
+AL$demo <- ifelse(AL$cand_nm %in% democrat, 2, NA)
+AL$green <- ifelse(AL$cand_nm %in% green, 3, NA)
+AL$libert <- ifelse(AL$cand_nm %in% libert, 4, NA)
+AL$ind <- ifelse(AL$cand_nm %in% independ, 5, NA)
+
+#creating a column to add new values to
+AL$party <- NA
+
+#merging columns values back
+for (i in colnames(AL)[19:23]) {
+  AL$party[!is.na(AL[[i]])] = AL[[i]][!is.na(AL[[i]])]
+}
+
+#re-assigning as numeric values
+AL$party <- as.numeric(AL$party)
+
+#dropping the unneeded columns
+for (i in colnames(AL)[19:23]) {
+  AL[[i]] <- NULL
+}
+
+```
+
+Now each row is assigned a party ID. Values were assigned using if-else statements, then condened into one column, "party".
+
+#### - Assigning Candidate Genders
+```{r}
+#creating vector with female candidate names
+female <- c("Fiorina, Carly","Clinton, Hillary Rodham","Stein, Jill")
+
+#assigning gender IDs
+AL$cand_gdr <- ifelse(AL$cand_nm %in% female,0,1)
+```
+
+Each candidate now has a gender.
+
+#### - Cleaning candidate names
+```{r}
+#Let's use the candidate's last name for interpretability in EDA
+AL$cand_nm <- vapply(strsplit(AL$cand_nm,","), `[`, 1, FUN.VALUE=character(1))
+
+```
+As stated earlier, last names are now being used for each cnadidate. This will make plots less un-wieldy for EDA.
+
+#### - Dropping columns with not much descriptive info
+```{r}
+AL_keep <- c("cmte_id",
+             "cand_id",
+             "cand_nm",
+             "contbr_nm",
+             "contbr_city",
+             "contbr_zip",
+             "contbr_employer",
+             "contbr_occupation",
+             "contb_receipt_amt",
+             "contb_receipt_dt",
+             "receipt_desc",
+             "memo_text",
+             "form_tp",
+             "election_tp",
+             "party",
+             "cand_gdr"
+             )
+
+AL <- subset(AL, select = AL_keep)
+
+```
+
+#### - Cleaning the Date column
+```{r}
+AL$contb_receipt_dt <- as.Date.character(AL$contb_receipt_dt,format = "%d-%B-%y")
+```
+
+#### - Changing the nme column to unique IDs
+```{r}
+AL <- transform(AL, nameID=match(contbr_nm, unique(contbr_nm)))
+AL$contbr_nm <- NULL
+```
+
+This block above is for purposes of anonymizing the rows, but creating an index. This allows for some stats by donor, like number of donations, sums, means, etc.
+
+
+# EDA
+## Univarate
+### Distribution of Donations
+#### Donation Summary
+```{r}
+summary(AL$contb_receipt_amt)
+```
+A min of -$7300? How is this possible.
+Let's look at a random donor ID.
+```{r}
+subset(AL, AL$contb_receipt_amt == min(AL$contb_receipt_amt))
+subset(AL, AL$nameID == 5151)
+
+```
+The receupt decription states "Refund". This explains why there are some negative values.  Let's explore this further.
+
+```{r}
+subset(AL,AL$contb_receipt_amt < 0)
+```
+There are 934 (~1.7% of total values) negative contributions. It is possible that these are refunds. Let's look at the values with table().
+```{r}
+negAL <- subset(AL, AL$contb_receipt_amt < 0)
+ftable(negAL$receipt_desc)
+```
+For the majority of these, there is no description. Others were redesignated to presidential campaigns (Hilary Victory Fund, redisgnation). These will be adjusted to have positive values, and the term type changed to G2016 (for presidential contributions). Others were redistributed to spouses. All redistributed (to spouse and to general/senate) values occur in the dataset twice, and people who wanted refunds wanted their donation rescinded. The safest approach would be to remove all negative values.
+
+#### Remove neg donations
+```{r}
+AL <- subset(AL, AL$contb_receipt_amt > 0)
+```
+Now all negative values are removed. The dataset is ready for EDA.
+
+
+####Donation Histogram
+
+```{r}
+summary(AL$contb_receipt_amt)
+```
+
+
+```{r}
+nrow(subset(AL,AL$contb_receipt_amt > 2000))
+nrow(subset(AL,AL$contb_receipt_amt > 1000))
+nrow(subset(AL,AL$contb_receipt_amt > 500))
+
+```
+There aren't many values above 500, so they will excluded from the following "quick and dirty" plot.
+
+```{r}
+ggplot(AL,aes(x=contb_receipt_amt,fill=I("darkblue"))) +geom_histogram(binwidth = 5) + coord_cartesian(xlim = c(0,500))
+```
+Most donations were in the ranges of $0-100. Large upticks of donations occur at certain intervals (200, 250, 100, 50), as one would expect. 
+
+Let's zoom in on donations under 100. 
+```{r}
+ggplot(AL,aes(x=contb_receipt_amt,fill=I("dodgerblue"))) +geom_histogram(binwidth = 5) + coord_cartesian(xlim = c(0,100))
+```
+Looking at the values zoomed in below 100, the most common values are 10, 25, 50, and 100. The majority of donations were below $50. 
+
+### Donations by Candidate
+#### - Summary statistics
+```{r}
+#grouping by candidate name
+candDonations <- group_by(AL, cand_nm)
+
+#creating summary statistics
+candDonations <- summarise(candDonations,count = n(),totalDonations = sum(contb_receipt_amt),meanDonation = mean(contb_receipt_amt),medianDonation = median(contb_receipt_amt))
+
+#making it a data table then sorting by number of donations
+candDonations <- data.table(candDonations)
+candDonations$cand_nm <- factor(x = candDonations$cand_nm,levels = candDonations$cand_nm)
+
+candDonations <- candDonations[order(candDonations$totalDonations,decreasing = TRUE),]
+candDonations
+```
+#### - Which Candidates raised the most money?
+```{r}
+ggplot(candDonations,aes(x = cand_nm,y = totalDonations,fill=cand_nm))+geom_bar(stat="identity")+theme(legend.position = "none") +  
+  theme(text = element_text(size=12),
+        axis.text.x = element_text(angle=60, hjust=1)) 
+
+#+theme(legend.key.size = unit(0.15, "cm")) 
+#+scale_fill_brewer(palette = "Set1")
+#+scale_color_gradient(low = "white", high = "red")
+#+scale_color_brewer(palette = "Spectral")
+```
+Not surprisingly, Trump and Clinton raised the most money, followed by Cruz, Carson, and Rubio.
+
+#### - Which Candidates had the most donations?
+```{r}
+ggplot(candDonations,aes(x = cand_nm,y = count,fill=cand_nm))+geom_bar(stat="identity")+theme(legend.position = "none") +  
+  theme(text = element_text(size=12),
+        axis.text.x = element_text(angle=60, hjust=1)) 
+
+```
+Clinton by and away had the highest number of distinct donations, followed by Trump, Cruz, Sanders, and Carson. 
+
+#### - Which Candidates had the highest average donation?
+```{r}
+ggplot(subset(candDonations, count >20),aes(x = cand_nm,y = meanDonation,fill=cand_nm))+geom_bar(stat="identity")+theme(legend.position = "none") +  
+  theme(text = element_text(size=12),
+        axis.text.x = element_text(angle=60, hjust=1)) 
+
+```
+Bush and Jindal had the highest average donation, though this doesnt take into account the sample size.I would predict that the candidates that recieved the most donations had lower mean donations.
+#### - Which Candidates had the highest median donation?
+```{r}
+ggplot(subset(candDonations, count >20),aes(x = cand_nm,y = medianDonation,fill=cand_nm))+geom_bar(stat="identity")+theme(legend.position = "none") +  
+  theme(text = element_text(size=12),
+        axis.text.x = element_text(angle=60, hjust=1)) 
+
+```
+Scott Walker ad Jeb had the highest median donations, both Republican. The Democratic candidates, Clinton and Sanders, had the lowest median donations. 
+
+## How much money was raised by party?
+```{r}
+partyDon <- AL %>%
+  group_by(party) %>%
+  summarise(count = n(),totalDonations = sum(contb_receipt_amt),meanDonation = mean(contb_receipt_amt),medianDonation = median(contb_receipt_amt))
+
+ggplot(partyDon,aes(x = factor(party),y = totalDonations,fill=party))+geom_bar(stat="identity")+theme(legend.position = "none") + scale_x_discrete(labels=c("Republican","Democratic", "Green", "Libertarian", "Independant")) + xlab("Political Party") + ylab("Sum of all donations")
+```
+Republican candidates outraised Democratic candidates by almost a 2:1 margin. No other party came close, though Libertarian candidates get an honorable mention with 3rd. 
+
+##   How much money was raised by Race?
+```{r}
+#grouping by candidate name
+electionDonations <- group_by(AL, election_tp)
+
+#creating summary statistics
+electionDonations <- summarise(electionDonations,count = n(),totalDonations = sum(contb_receipt_amt),meanDonation = mean(contb_receipt_amt),medianDonation = median(contb_receipt_amt))
+
+#making it a data table then sorting by number of donations
+electionDonations <- data.table(electionDonations)
+electionDonations <- electionDonations[order(electionDonations$count,decreasing = TRUE),]
+electionDonations
+
+ggplot(electionDonations,aes(x = factor(election_tp),y = totalDonations,fill=election_tp))+geom_bar(stat="identity")+theme(legend.position = "none") + scale_x_discrete(labels=c("No Race Indicated","General","Other","Primary")) + xlab("Political Race") + ylab("Sum of all donations")
+
+
+```
+More money was raised in the General, with almost twice as much money that was raised in the primary.
+
+## How much money was raised by Candidate for each race?
+```{r}
+
+#grouping by candidate name
+candRaceDonations <- group_by(AL, cand_nm, election_tp)
+
+#creating summary statistics
+candRaceDonations <- summarise(candRaceDonations,count = n(),totalDonations = sum(contb_receipt_amt),meanDonation = mean(contb_receipt_amt),medianDonation = median(contb_receipt_amt))
+
+#making it a data table then sorting by number of donations
+candRaceDonations <- data.table(candRaceDonations)
+candRaceDonations <- candRaceDonations[order(candRaceDonations$count,candRaceDonations$cand_nm,decreasing = TRUE),]
+candRaceDonations
+```
+With this data now grouped and separated out, let's look at the most popular candidates in Alabama: Clinton, Trump, Sanders, Cruz, Rubio, and Carson and categorize money raised by race.
+```{r}
+popCand <- c("Clinton","Cruz","Sanders","Trump","Carson", "Rubio")
+candRaceDonations <- candRaceDonations %>%
+  filter(cand_nm %in% popCand)
+
+ggplot(candRaceDonations,aes(x = factor(cand_nm),y = totalDonations,fill=election_tp))+geom_bar(stat="identity")+theme(legend.position = "none") #+ scale_x_discrete(labels=c("No Race Indicated","General","Other","Primary")) + xlab("Political Race") + ylab("Sum of all donations")
+
+```
+
+
+
+
+#### - Preparing time series index
+```{r}
+#grouping by date
+donationsTime <- group_by(AL, contb_receipt_dt)
+
+#creating summary statistics
+donationsTime <- summarise(donationsTime,count = n(),totalDonations = sum(contb_receipt_amt),meanDonation = mean(contb_receipt_amt),medianDonation = median(contb_receipt_amt))
+
+#making it a data table then sorting by number of donations
+donationsTime <- data.table(donationsTime)
+donationsTime <- donationsTime[order(donationsTime$contb_receipt_dt,decreasing = FALSE),]
+donationsTime
+```
+#### - How much money was raised per day?
+```{r}
+ggplot(donationsTime, aes(x = contb_receipt_dt, y = totalDonations)) + geom_line(color=I("blue")) + xlab("") + ylab("Daily Donation Sum") + scale_x_date(date_breaks = "4 month")
+```
+#### - How many donations were there per day?
+```{r}
+ggplot(donationsTime, aes(x = contb_receipt_dt, y = count)) + geom_line(color=I("red")) + xlab("") + ylab("# Daily Donations")+scale_x_date(date_breaks = "4 month")
+```
+#### - What was the mean and median donations per day?
+##### - Mean
+```{r}
+ggplot(donationsTime, aes(x = contb_receipt_dt, y = meanDonation)) + geom_line(color=I("green")) + xlab("") + ylab("Mean of Daily Donations")+scale_x_date(date_breaks = "4 month")
+```
+##### - Median
+```{r}
+ggplot(donationsTime, aes(x = contb_receipt_dt, y = medianDonation)) + geom_line(color=I("orange")) + xlab("") + ylab("Median of Daily Donations")+scale_x_date(date_breaks = "4 month")
+```
+
+## Donations by Candidate
+```{r}
+#grouping by date
+CandDonationsTime <- group_by(AL, contb_receipt_dt,cand_nm)
+
+#creating summary statistics
+CandDonationsTime <- summarise(CandDonationsTime,count = n(),totalDonations = sum(contb_receipt_amt),meanDonation = mean(contb_receipt_amt),medianDonation = median(contb_receipt_amt))
+
+#making it a data table then sorting by number of donations
+CandDonationsTime <- data.table(CandDonationsTime)
+CandDonationsTime <- CandDonationsTime[order(CandDonationsTime$contb_receipt_dt,decreasing = FALSE),]
+CandDonationsTime
+```
+### How much total money was raised per day per candidate?
+```{r}
+ggplot(CandDonationsTime, aes(x = contb_receipt_dt, y = totalDonations)) + geom_line() + xlab("") + ylab("Daily Donation Sum") + scale_x_date(date_breaks = "4 month")+facet_wrap(~cand_nm)
+```
+
+#### - Distribution for candidates with 1000+ donations?
+For interetability purposes.
+
+Filtering donations by candidate
+```{r}
+over1000 <- c("Clinton","Sanders","Cruz","Trump","Carson","Rubio")
+
+filCndDon <- subset(CandDonationsTime, cand_nm %in% over1000)
+```
+
+```{r}
+ggplot(filCndDon, aes(x = contb_receipt_dt, y = totalDonations,color=cand_nm)) + geom_line() + xlab("") + ylab("Daily Donation Sum") + scale_x_date(date_breaks = "9 month")+ylim(0,10000)+facet_wrap(~cand_nm)
+```
+#### - Number of Donations per major candidate?
+```{r}
+ggplot(filCndDon, aes(x = contb_receipt_dt, y = count ,color=cand_nm)) + geom_line() + xlab("") + ylab("# Daily Donations") + scale_x_date(date_breaks = "9 month")+facet_wrap(~cand_nm)+ylim(0,300)
+```
+
+#### - Median Donations per major candidate?
+```{r}
+ggplot(filCndDon, aes(x = contb_receipt_dt, y = medianDonation ,color=cand_nm)) + geom_line() + xlab("") + ylab("Median Daily Donations") + scale_x_date(date_breaks = "9 month")+facet_wrap(~cand_nm)
+```
+
+#### - Donations over time for Democratic Candidates
+```{r}
+democrat <- c("Clinton","Sanders")
+CandDonDemo <- subset(CandDonationsTime, cand_nm %in% democrat)
+
+ggplot(CandDonDemo, aes(x = contb_receipt_dt, y = totalDonations,color=cand_nm)) + geom_line() + xlab("") + ylab("Sum of Daily Donations") + scale_x_date(date_breaks = "4 month")#+facet_wrap(~cand_nm)
+```
+```{r}
+ggplot(CandDonDemo, aes(x = contb_receipt_dt, y = medianDonation,color=cand_nm)) + geom_line() + xlab("") + ylab("Median Daily Donations") + scale_x_date(date_breaks = "9 month")#+facet_wrap(~cand_nm)
+```
+#### - How many donations did each Democratic candidate recieve per day over time? 
+```{r}
+ggplot(CandDonDemo, aes(x = contb_receipt_dt, y = count,color=cand_nm)) + geom_line(aes(alpha=.7)) + xlab("") + ylab("# Daily Donations") + scale_x_date(date_breaks = "4 month")+ggtitle("Number of Donations to Democratic Candidates Over Time")
+```
+
+
+Perhaps a bit too grandular. Let's group by week.
+```{r}
+AL<- AL[order(AL$contb_receipt_dt,decreasing = FALSE)]
+contb_wk <- data.table(Dates = AL$contb_receipt_dt, Week = format(AL$contb_receipt_dt, format = "%W"))
+
+AL$contb_wk <- format(AL$contb_receipt_dt, format = "%W")
+AL$contb_yr <- unlist(lapply(AL$contb_receipt_dt, year))
+
+AL_Rolled <- AL %>%
+  group_by(contb_yr,contb_wk) %>%
+  summarise(count = n(),totalDonations = sum(contb_receipt_amt),meanDonation = mean(contb_receipt_amt),medianDonation = median(contb_receipt_amt))
+  
+AL_Cand_Rolled <- AL %>%
+  group_by(contb_yr,contb_wk,cand_nm) %>%
+  summarise(count = n(),totalDonations = sum(contb_receipt_amt),meanDonation = mean(contb_receipt_amt),medianDonation = median(contb_receipt_amt))
+  
+AL_Rolled$index <- as.Date.character(paste(AL_Rolled$contb_yr,AL_Rolled$contb_wk,1,sep = "-"),format = "%Y-%U-%u")
+AL_Cand_Rolled$index <- as.Date.character(paste(AL_Cand_Rolled$contb_yr,AL_Cand_Rolled$contb_wk,1,sep = "-"),format = "%Y-%U-%u")
+
+```
+
+## Donation Time series by week
+
+#### - Sum of Weekly Donations 
+```{r}
+ggplot(AL_Rolled, aes(x = index, y = totalDonations)) + geom_line(color=I("#2c7fb8")) + xlab("") + ylab("Sum Daily Donations") +scale_x_date(date_breaks = "4 month")
+       
+```
+
+#### - Sum of Weekly Donations by Candidate
+```{r}
+ggplot(AL_Cand_Rolled, aes(x = index, y = totalDonations ,color=cand_nm)) + geom_line() + xlab("") + ylab("Sum Daily Donations") + scale_x_date(date_breaks = "9 month")+facet_wrap(~cand_nm)
+```
+####-  Sum of Donations by major candidate per week
+```{r}
+filCndWk <- subset(AL_Cand_Rolled, cand_nm %in% over1000)
+
+
+ggplot(filCndWk, aes(x = index, y = totalDonations ,color=cand_nm)) + geom_line() + xlab("") + ylab("Sum Weekly Donations")+facet_wrap(~cand_nm)#+ylim(0,10000)# + scale_x_date(date_breaks = "4 month")
+```
+#### - Count of Donations by major candidate per week
+```{r}
+ggplot(filCndWk, aes(x = index, y = count ,color=cand_nm)) + geom_line() + xlab("") + ylab("Sum Weekly Donations")+facet_wrap(~cand_nm)#+ylim(0,10000)# + scale_x_date(date_breaks = "4 month")
+```
+
+#### - What about distribution of all donations from major candidates?
+Histogram Plot
+```{r}
+ggplot(filCndDon,aes(x = totalDonations,color=cand_nm))+
+  geom_histogram(binwidth = 5) +coord_cartesian(xlim = c(0:100))+scale_fill_hue()#+facet_wrap(~cand_nm)
+```
+
+
+
+#### - What is the distribution of all donations?
+```{r}
+ggplot(AL,aes(x = contb_receipt_amt))+
+  geom_histogram(binwidth = 5,fill=I("seagreen")) +coord_cartesian(xlim = c(0:100))
+
+```
+Donations are clustered at certain intervals (ex: 25,50,75,80,100), as one would expect. The largest number of values see, to be clustered around $25.
+
+#### - What is the distribution of donations for each candidate?
+```{r}
+ggplot(AL,aes(x = contb_receipt_amt))+
+  geom_histogram(binwidth = 5,fill=I("red")) +coord_cartesian(xlim = c(0:100))+facet_wrap(~cand_nm)
+
+```
+
+##Spatial Info
+```{r}
+#Committe ID, Candidate ID, and Candidate Name
+head(sort(table(AL$contbr_city),decreasing = T),10)
+head(sort(table(AL$contbr_zip),decreasing = T),10)
+head(sort(table(AL$contbr_employer),decreasing = T),10)
+head(sort(table(AL$contbr_occupation),decreasing = T),10)
+
+```
+What I aimed to do here was take a snapshot of the data and see how much it needed to be cleaned. The city, employer, and occupation vaules seem pretty well coded, but the zip codes (the 2nd line) will need be cleaned, via extraction of the first 5 values. 
+
+For employer, joining similar values (Self, Self-Employed, Self Employed, etc.) will have to be done to get a more accurate snap-shot. I am not confident that there will be any useful insight from this variable, however.
+
+For occupation, I will have to do minor cleaning (joining similar values), but this seems more stratified and varied. 
+
+Because it is such a large group (30% of the dataset), it will be useful to analyze the spending patterns for retirees.
+
+
+####Cleaning the Zip codes
+```{r}
+#Let's use the candidate's last name for interpretability in EDA
+AL$contbr_zip <- substr(AL$contbr_zip,0,5)
+
+```
+#### Top Donating Cities
+```{r}
+AL_city <- AL %>%
+  group_by(contbr_city) %>%
+  summarise(totalDonations = sum(contb_receipt_amt),meanDonation = mean(contb_receipt_amt),n= n()) %>%
+  filter(n > 10)
+
+AL_city
+```
+
+```{r}
+
+```
+
+
+#### Top Donating Zip Codes
+```{r}
+AL_ZIP <- AL %>%
+  group_by(contbr_zip) %>%
+  summarise(totalDonations = sum(contb_receipt_amt),meanDonation = mean(contb_receipt_amt),n= n()) %>%
+  filter(n > 10)
+
+AL_ZIP
+```
+
