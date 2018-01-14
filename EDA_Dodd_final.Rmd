@@ -1,0 +1,929 @@
+---
+title: "Analysis of Campaign Donations from Alabama in the 2016 Presidential Cycle"
+author: "Jacob Dodd"
+date: "11/19/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE,
+                      warning=FALSE, 
+                      message=FALSE)
+```
+
+# Measuring Presidential Campaign Contributions from the 2016 cycle from Alabama
+
+Now that the 2016 Presidential Election cycle has been long wrapped up, there is a trove of data on it. One of the areas in campaigning that is seen as an important indicator of winning is campaign contributions.
+
+For my Data Analyst Nanodegree from Udacity, I was tasked with finding and analyzing a dataset in the wild using R. To accomplish this, I set out to analyze campaign contributions to different presidential campaingns during the 2016 presidential election cycle from Alabama. Why Alabama? It was randomly chosen.
+
+Data was downloaded from http://classic.fec.gov/disclosurep/PDownload.do. 
+
+Some questions I hope to answer:
+1) Which candidates raised the most money?
+2) How did donations sums/counts progress over time?
+3) Which candidates had the lowest/highest average donations?
+
+Importing relevant Libraries
+```{r}
+rm(list=ls())
+#setwd("/Users/jacobdodd/Desktop")
+
+library(skimr)
+library(ggplot2)
+library(dplyr)
+library(reshape2)
+library(data.table)
+library(lubridate)
+library(knitr)
+library(tidyr)
+library(RColorBrewer)
+library(viridis)
+library(plotflow)
+library(egg)
+
+```
+
+### Loading the dataset and first look
+```{r}
+#reading in the table using fread from data.table
+AL <- fread("ALP2016.csv",sep = ",",data.table = TRUE,stringsAsFactors = FALSE)
+
+#Starting data input on line 2 and discarding line 1 
+#because it has too few or too many items to #be column names or data: 
+names = c("cmte_id","cand_id","cand_nm","contbr_nm","contbr_city",
+          "contbr_st","contbr_zip","contbr_employer","contbr_occupation",
+          "contb_receipt_amt","contb_receipt_dt","receipt_desc","memo_cd",
+          "memo_text","form_tp","file_num","tran_id","election_tp")
+
+#fread mistakenly loaded a 19th column when there are only 18, 
+#so I have to drop it before reassigning variable names.
+AL$V19 <- NULL
+
+#reassigning names
+colnames(AL) <- names
+rm(names)
+skim(AL)
+```
+The only numeric variable here, donation amount, had an intersting distribution. The mean was 116, the min a strange -7300, max of 10800, and a median of 38. 
+
+# Data Review and Cleaning
+Some variables that jumped out to me:
+- Committee ID
+- Candidate ID
+- Candidate Name
+- Conbritor City
+- Contrib. Zip
+- Contrib. Occupation
+- Receipt Amount
+- Recepit Date
+- Election Type
+
+It will interesting to do some exploration of giving amounts and counts over time, as well as some spatial potting. Another thing that could be possible is analysis of different attributes (city, occupation, etc.) of contributors, and see if there are any common features. 
+
+There are some columns which may not provide much insight:
+-receipt description
+- memo code
+- memo text
+- contbr state (all values are from AL)
+- contrib. employer (I am doubtful there are enough insightful values for each of the 55000 rows)
+- Contr. Name (these should be used to create IDs, then be removed, to de-identify the rows) If anything, I can use these to  create a contributor ID to do some analysis on how many contributions the average Alabaman gave
+- form type (not sure what this represents)
+- file number(not sure what this represents)
+
+There are few missing values for the columns here, the only substantial are in contributor employer. 
+
+
+Let's now look at individual column values with the table() function.
+
+#### Candidate information Columns -Committe ID, Candidate ID, and Candidate Name 
+```{r}
+#Committe ID, Candidate ID, and Candidate Name
+for (i in c("cmte_id","cand_id","cand_nm")){
+  print(table(AL[[i]]))
+  print(length(unique(AL[[i]])))
+}
+
+```
+
+There were 23 candidates that recieved donation in this election cycle in Alabama. This database does no contain any information on candidate political party or gender. This will be added shortly.
+
+A caveat here is this candidate information only represents candidates that recieved at least one donation, so does not serve as a list of all candidates that ran for president in this cycle. 
+
+From a cursory look, looking at the candidates names via the format here is unwieldy. Let's use the last name for interpretability when doing EDA.
+
+For most of the candidates listed here, I am able to ID which party they ran in. Apparently Lessig and McMullin ran as a Democrat and Independant, respectively. 
+
+#### - Creating party name vector containing candidates
+```{r}
+#adding political party for candidates
+republican <- c("Bush, Jeb","Carson, Benjamin S.",
+                "Christie, Christopher J.",
+                "Cruz, Rafael Edward 'Ted'","Fiorina, Carly",
+                "Jindal, Bobby",
+                "Huckabee, Mike","Graham, Lindsey O.",
+                "Kasich, John R.",
+                "Perry, James R. (Rick)","Rubio, Marco",
+                "Santorum, Richard J.",
+                "Trump, Donald J.","Walker, Scott","Paul, Rand")
+
+democrat <- c("Clinton, Hillary Rodham","Sanders, Bernard",
+              "Webb, James Henry Jr.","O'Malley, Martin Joseph",
+              "Lessig, Lawrence")
+
+independ <- c("McMullin, Evan")
+
+libert <- c("Johnson, Gary")
+
+green <- c("Stein, Jill")
+
+#checking lengths so each candidate is reprented
+sum(length(republican),length(democrat),1,1,1)
+```
+
+#### - Assigning Party IDs to Candidates
+```{r}
+#creating party IDs
+AL$repub <- ifelse(AL$cand_nm %in% republican, 1, NA)
+AL$demo <- ifelse(AL$cand_nm %in% democrat, 2, NA)
+AL$green <- ifelse(AL$cand_nm %in% green, 3, NA)
+AL$libert <- ifelse(AL$cand_nm %in% libert, 4, NA)
+AL$ind <- ifelse(AL$cand_nm %in% independ, 5, NA)
+
+#creating a column to add new values to
+AL$party <- NA
+
+#merging columns values back
+for (i in c("repub","demo","green","libert","ind")) {
+  AL$party[!is.na(AL[[i]])] = AL[[i]][!is.na(AL[[i]])]
+}
+
+#re-assigning as numeric values
+AL$party <- as.numeric(AL$party)
+
+#dropping the unneeded columns
+for (i in c("repub","demo","green","libert","ind")) {
+  AL[[i]] <- NULL
+}
+
+```
+
+Now each row is assigned a party ID. Values were assigned using if-else statements, then condened into one column, "party".
+
+#### - Assigning Candidate Genders
+```{r}
+#creating vector with female candidate names
+female <- c("Fiorina, Carly","Clinton, Hillary Rodham","Stein, Jill")
+
+#assigning gender IDs
+AL$cand_gdr <- ifelse(AL$cand_nm %in% female,0,1)
+```
+
+Each candidate now has a gender.
+
+#### - Cleaning candidate names
+```{r}
+#Let's use the candidate's last name for interpretability in EDA
+AL$cand_nm <- vapply(strsplit(AL$cand_nm,","),
+                     `[`, 1, FUN.VALUE=character(1))
+
+```
+As stated earlier, last names are now being used for each cnadidate. This will make plots less un-wieldy for EDA.
+
+#### - Dropping columns with not much descriptive info
+```{r}
+AL_keep <- c("cmte_id",
+             "cand_id",
+             "cand_nm",
+             "contbr_nm",
+             "contbr_city",
+             "contbr_zip",
+             "contbr_employer",
+             "contbr_occupation",
+             "contb_receipt_amt",
+             "contb_receipt_dt",
+             "receipt_desc",
+             "memo_text",
+             "form_tp",
+             "election_tp",
+             "party",
+             "cand_gdr"
+             )
+
+AL <- subset(AL, select = AL_keep)
+
+```
+
+#### - Cleaning the Date column
+```{r}
+AL$contb_receipt_dt <- as.Date.character(AL$contb_receipt_dt,format = "%d-%B-%y")
+```
+
+#### - Changing the nme column to unique IDs
+```{r}
+AL <- transform(AL, nameID=match(contbr_nm, unique(contbr_nm)))
+AL$contbr_nm <- NULL
+```
+
+This block above is for purposes of anonymizing the rows, but creating an index. This allows for some stats by donor, like number of donations, sums, means, etc.
+
+
+# EDA
+
+## Univarate - Donations
+
+#### Donation Summary
+```{r}
+summary(AL$contb_receipt_amt)
+```
+
+A min of -$7300? How is this possible.
+Let's look at a random donor ID.
+```{r}
+subset(AL, AL$contb_receipt_amt == min(AL$contb_receipt_amt))
+subset(AL, AL$nameID == 5151)
+
+```
+
+The receipt decription states "Refund". This explains why there are some negative values.  Let's explore this further.
+
+```{r}
+subset(AL,AL$contb_receipt_amt < 0)
+```
+
+There are 934 (~1.7% of total values) negative contributions. It is possible that these are refunds. Let's look at the values with table().
+```{r}
+negAL <- subset(AL, AL$contb_receipt_amt < 0)
+table(negAL$receipt_desc)
+```
+
+For the majority of these, there is no description. Others were redesignated to presidential campaigns (Hilary Victory Fund, redisgnation). These will be adjusted to have positive values, and the term type changed to G2016 (for presidential contributions). Others were redistributed to spouses. All redistributed (to spouse and to general/senate) values occur in the dataset twice, and people who wanted refunds wanted their donation rescinded. The safest approach would be to remove all negative values.
+
+#### Removing negative donations
+```{r}
+AL <- subset(AL, AL$contb_receipt_amt > 0)
+```
+
+Now all negative values are removed. Let's look at the the new variable summary:
+
+```{r}
+summary(AL$contb_receipt_amt)
+```
+
+Interesting. The mean, median and 25/75% quartiles went up a few values. The data looks to skew left. 
+Let's look at the number of records for the higher end:
+
+```{r}
+nrow(subset(AL,AL$contb_receipt_amt > 2000))
+nrow(subset(AL,AL$contb_receipt_amt > 1000))
+nrow(subset(AL,AL$contb_receipt_amt > 500))
+
+```
+
+There aren't many values above 500, so they will excluded from the following "quick and dirty" plot.
+
+The variable is now ready for EDA!
+
+####Donation Histogram
+```{r Distribution of Donations}
+ggplot(AL,aes(x=contb_receipt_amt,fill=I("darkblue"))) + 
+  geom_histogram(binwidth = 5) + ggtitle("Distribution of Donation Amount ($)") + 
+  xlab("Donation Amount ($)") + ylab("Count") 
+```
+
+The distribution includes some very large outliers, which distorts the plot. To get a sense of it is showing we need to zoom in a bit more using coord_cartesion() and setting the limits to 0:500
+
+```{r}
+ggplot(AL,aes(x=contb_receipt_amt,fill=I("darkblue"))) + 
+  geom_histogram(binwidth = 5) + 
+  ggtitle("Distribution of Donation Amount ($)") + 
+  xlab("Donation Amount ($)") + ylab("Count") +
+  coord_cartesian(xlim = c(0,500))
+```
+
+That is cleaner, and we can see some patterns.
+Most donations were in the ranges of $0-100. Large upticks of donations occur at certain intervals (200, 250, 100, 50), as one would expect. 
+
+Let's zoom in even further, on donations under 100. 
+
+```{r Donation Histogram Zoomed In}
+ggplot(AL,aes(x=contb_receipt_amt,fill=I("dodgerblue"))) + 
+  geom_histogram(binwidth = 5) + 
+  coord_cartesian(xlim = c(0,100)) + 
+  ggtitle("Distribution of Donation Amounts less than 100 ($)") + 
+  xlab("Donation Amount ($)") + ylab("Count")
+```
+
+Looking at the values zoomed in below 100, the most common values are 10, 25, 50, and 100. The majority of donations were below $50. 
+
+### Donations by Candidate
+
+#### - Summary statistics
+```{r Donations by Candidate}
+#grouping by candidate name
+candDonations <- group_by(AL, cand_nm)
+
+#creating summary statistics
+candDonations <- summarise(candDonations,count = n(),
+                           totalDonations = sum(contb_receipt_amt),
+                           meanDonation = mean(contb_receipt_amt),
+                           medianDonation = median(contb_receipt_amt))
+
+#making it a data table then sorting by number of donations
+candDonations <- data.table(candDonations)
+candDonations$cand_nm <- factor(x = candDonations$cand_nm,
+                                levels = candDonations$cand_nm)
+
+#ordering dataframe by total donations 
+candDonations <- candDonations[order(candDonations$totalDonations,
+                                     decreasing = TRUE),]
+candDonations
+```
+
+#### - Which Candidates raised the most money?
+```{r Total Raised by Candidate}
+
+TotalCand <- ggplot(candDonations,aes(x = reorder(cand_nm, totalDonations), 
+                         y = totalDonations,fill = totalDonations)) + 
+  geom_bar(stat="identity",position = "dodge") +
+  theme(legend.position = "none") +  
+  theme(text = element_text(size=12),
+        axis.text.x = element_text(angle=0, hjust=0.6)) +
+  scale_fill_viridis(begin = 1, end = 0)  + 
+  xlab("") + ylab("Total Raised ($)") +
+  coord_flip() + guides(fill = guide_legend()) +
+  ggtitle("Total Amount Raised in Alabama by Candidate")
+
+TotalCand
+```
+
+Not surprisingly, Trump and Clinton raised the most money, followed by Cruz, Carson, and Rubio.
+
+#### - Which Candidates had the most donations?
+
+```{r}
+ggplot(candDonations,aes(x = reorder(cand_nm, count),
+                         y = count,fill=factor(count))) +
+  geom_bar(stat="identity") +
+  theme(legend.position = "none") +  
+  theme(text = element_text(size=12),
+        axis.text.x = element_text(angle=0, hjust=0.6)) +
+  scale_fill_viridis(discrete = T,begin =1, end = 0) +
+  coord_flip() + guides(fill = guide_legend()) +
+  ggtitle("Total Number of Donations in Alabama by Candidate") +
+  xlab("") +ylab("# of Donations")
+
+```
+
+Clinton by and away had the highest number of distinct donations, followed by Trump, Cruz, Sanders, and Carson. Republican candidates appear to have much higher average donations, while the democratic candidates recieving much more smaller donations. 
+
+#### - Which Candidates had the highest average donation?
+
+```{r}
+AvgDonCand <- ggplot(subset(candDonations, count >100), 
+                     aes(x = reorder(cand_nm, meanDonation), 
+                         y = meanDonation, fill=factor(meanDonation)))+
+  geom_bar(stat="identity")+ 
+  theme(legend.position = "none") +  
+  theme(text = element_text(size=12),
+        axis.text.x = element_text(angle=60, hjust=1)) +
+  ggtitle("Average Donation By Candidate (>100 Donations)") +
+  ylab("Amount ($)") + xlab("Candidate") + 
+  scale_fill_viridis(option = "B",discrete = T, begin = 1, end = 0)
+
+AvgDonCand
+
+```
+
+Bush and Walker had the highest average donation, though this doesn't take into account sample size.I would predict that the candidates that recieved the most donations had lower mean donations.
+
+#### - Which Candidates had the highest median donation?
+
+```{r}
+ggplot(subset(candDonations, count >20),aes(x = reorder(cand_nm,
+                                                        medianDonation), 
+                                            y = medianDonation,
+                                            fill=factor(medianDonation))) +
+  geom_bar(stat="identity") + theme(legend.position = "none") +  
+  theme(text = element_text(size=12),
+        axis.text.x = element_text(angle=60, hjust=1)) +
+  ggtitle("Median Donation By Candidate (>20 Donations)") +
+  ylab("Amount ($)") + xlab("Candidate") +
+  scale_fill_viridis(discrete = T, begin = 1, end = 0)
+
+```
+
+Scott Walker and Jeb Bush had the highest median donations, both Republican. The Democratic candidates, Clinton and Sanders, had the lowest median donations. 
+
+#### - What is the distribution of donations for each candidate?
+```{r}
+ggplot(AL,aes(x = contb_receipt_amt))+
+  geom_histogram(binwidth = 5,fill=I("red")) +
+  coord_cartesian(xlim = c(0:100))+facet_wrap(~cand_nm)
+
+```
+
+## How much money was raised by party?
+```{r}
+# dplyr chain that groups by party then summarizes amounts
+partyDon <- AL %>%
+  group_by(party) %>%
+  summarise(count = n(),totalDonations = sum(contb_receipt_amt),meanDonation = mean(contb_receipt_amt),medianDonation = median(contb_receipt_amt))
+
+ggplot(partyDon,aes(x = factor(party),y = totalDonations,fill=party)) +
+  geom_bar(stat="identity")+
+  theme(legend.position = "none") + 
+  scale_x_discrete(labels=c("Republican","Democratic",
+                            "Green", "Libertarian", "Independant")) + 
+  xlab("Political Party") + ylab("Sum of all donations")
+```
+
+Republican candidates outraised Democratic candidates by almost a 2:1 margin. No other party came close, though Libertarian candidates get an honorable mention with 3rd. 
+
+##   How much money was raised by Race?
+```{r}
+#grouping by candidate name
+
+electionDonations <- group_by(AL, election_tp)
+
+#creating summary statistics
+electionDonations <- summarise(electionDonations,
+                               count = n(),
+                               totalDonations = sum(contb_receipt_amt),
+                               meanDonation = mean(contb_receipt_amt),
+                               medianDonation = median(contb_receipt_amt))
+
+#making it a data table then sorting by number of donations
+electionDonations <- data.table(electionDonations)
+electionDonations <- electionDonations[order(electionDonations$count,
+                                             decreasing = TRUE),]
+electionDonations
+
+ggplot(electionDonations,aes(x = reorder(election_tp, -totalDonations),
+                             y = totalDonations, fill=election_tp)) +
+  geom_bar(stat="identity") + 
+  theme(legend.position = "none") + 
+  scale_x_discrete(labels = c("Primary","General","No Race Indicated","Other")) +
+  xlab("Political Race") +
+  ylab("Sum of all donations ($)") + 
+  scale_fill_viridis(discrete = T, begin = 1, end = 0, option = "A")
+
+```
+
+More money was raised in the General, with almost twice as much money that was raised in the primary.
+
+## How much money was raised by Candidate for each race?
+```{r}
+
+#grouping by candidate name
+candRaceDonations <- group_by(AL, cand_nm, election_tp)
+
+#creating summary statistics
+candRaceDonations <- summarise(candRaceDonations,
+                               count = n(),
+                               totalDonations = sum(contb_receipt_amt),
+                               meanDonation = mean(contb_receipt_amt),
+                               medianDonation = median(contb_receipt_amt))
+
+#making it a data table then sorting by number of donations
+candRaceDonations <- data.table(candRaceDonations)
+candRaceDonations <- candRaceDonations[order(candRaceDonations$count,
+                                             candRaceDonations$cand_nm,
+                                             decreasing = TRUE),]
+candRaceDonations
+```
+
+With this data now grouped and separated out, let's look at the most popular candidates in Alabama: Clinton, Trump, Sanders, Cruz, Rubio, and Carson and categorize money raised by race.
+
+```{r}
+#creating vector to filter major candidates by
+popCand <- c("Clinton","Cruz","Sanders","Trump","Carson", "Rubio")
+candRaceDonations <- candRaceDonations %>%
+  filter(cand_nm %in% popCand)
+
+#plotting stacked bar chart of candidate money raised by election race
+CandBar <- ggplot(candRaceDonations,
+                  aes(x = reorder(cand_nm, -totalDonations),
+                      y = totalDonations,fill=election_tp)) + 
+  geom_bar(stat="identity") +
+  ggtitle("Total Contributions to Major Candidates by Race") + 
+  ylab("Money Raised ($)") + xlab("Candidate")  + 
+  scale_fill_viridis(discrete = T, option = 'D') 
+
+CandBar$labels$fill <- "Race"
+CandBar
+```
+
+Observations:
+1) Clinton raised the most money of any candidate in the Primaries
+2) Cruz by a substantial margin raised the most money of any republican candidate during the primary, followed by Trump, Carson and Rubio
+3) Trump raised the most money total, with the majority coming during the General
+4) Trump outraised Hilary in the General
+
+I next want to look at donations as time-series, by candidate and race.
+
+## Time Series Analysis of Donations
+
+```{r}
+#grouping by date
+donationsTime <- group_by(AL, contb_receipt_dt)
+
+#creating summary statistics
+donationsTime <- summarise(donationsTime,count = n(),
+                           totalDonations = sum(contb_receipt_amt),
+                           meanDonation = mean(contb_receipt_amt),
+                           medianDonation = median(contb_receipt_amt))
+
+#making it a data table then sorting by number of donations
+donationsTime <- data.table(donationsTime)
+donationsTime <- donationsTime[order(donationsTime$contb_receipt_dt,
+                                     decreasing = FALSE),]
+donationsTime
+```
+
+#### - How much money was raised per day?
+
+```{r}
+ggplot(donationsTime, aes(x = contb_receipt_dt, 
+                          y = totalDonations)) + geom_line(color=I("blue")) +
+  xlab("") + ylab("Daily Sum ($)") + 
+  scale_x_date(date_breaks = "4 month") +
+  ggtitle("Money Donated per Day During the 2016 Presidential Cycle")
+```
+
+Observations:
+1) The day with the largest sum of donations was a day in January, before the primary season, which started in February
+2) The day with the second largest sum was February 29th, the day before "Super Tuesday" (March 1st), in which there were 12 primaries (https://www.washingtonpost.com/graphics/politics/2016-election/primaries/schedule/)
+3) The next largest days were in mid to late July, mirroring the dates of the Republican and Democratic Conventions (https://en.wikipedia.org/wiki/2016_Democratic_National_Convention, https://en.wikipedia.org/wiki/2016_Republican_National_Convention)
+4) After the conventions (General Election race), the daily donation sums picked up consistently until the end of the race in the beginning of November
+5) Donations during the General Election race (after July 1st), seem to have a cyclical pattern, I hypothesize representing weekly cycles
+
+#### - How many donations were there per day?
+
+```{r}
+ggplot(donationsTime, aes(x = contb_receipt_dt, y = count)) + 
+  geom_line(color=I("red")) + xlab("") + ylab("# Daily Donations") +
+  scale_x_date(date_breaks = "4 month") + 
+  ggtitle("Number of Donations per Day in the 2016 Presidential Cycle")
+```
+
+Observations:
+1) We see multiple trends here: rising and falling around Super Tuesday (March 1st), then spikes in July (due to party conventions), and then steady increases between August and November
+2)The days with the highest number of donations were July 11/12, which each had over 1000 donations, which was a week before the Republican Party Convention (July 18)
+3) The number of donations per day steadily rose after July (during the General Election Race), from August to November
+4) The number of donations per day rose as primary season approached (the first primary was February 1st, 2016)
+
+#### - What was the mean and median donations per day?
+
+##### - Mean
+
+```{r}
+ggplot(donationsTime, aes(x = contb_receipt_dt, y = meanDonation)) +
+  geom_line(color=I("green")) + xlab("") + ylab("Mean of Daily Donations ($)") +
+  scale_x_date(date_breaks = "4 month")
+```
+
+While there were not many donations (by count) early in the election cycle, the average donations were extremely high, compared to donations post November 2015.This suggests few donors with larger pockets making donations early.
+
+##### - Median
+
+```{r}
+ggplot(donationsTime, aes(x = contb_receipt_dt, y = medianDonation)) +
+  geom_line(color=I("orange")) + xlab("") +
+  ylab("Median of Daily Donations ($)") +
+  scale_x_date(date_breaks = "4 month")
+```
+
+Similar to the plot above, days earlier in the campagin cycle had significant median donations compared to days in the last year of the election cycle.
+
+## Time Series Donations by Candidate
+
+```{r}
+#grouping by date
+CandDonationsTime <- group_by(AL, contb_receipt_dt,cand_nm)
+
+#creating summary statistics
+CandDonationsTime <- summarise(CandDonationsTime,count = n(),totalDonations = sum(contb_receipt_amt),meanDonation = mean(contb_receipt_amt),
+                               medianDonation = median(contb_receipt_amt))
+
+#making it a data table then sorting by number of donations
+CandDonationsTime <- data.table(CandDonationsTime)
+CandDonationsTime <- CandDonationsTime[order(CandDonationsTime$contb_receipt_dt,
+                                             decreasing = FALSE),]
+CandDonationsTime
+```
+
+#### - How much total money was raised per day per candidate?
+
+```{r}
+ggplot(CandDonationsTime, aes(x = contb_receipt_dt, y = totalDonations)) +
+  geom_line() + xlab("") + ylab("Daily Donation Sum ($)") +
+  scale_x_date(date_breaks = "9 month")+ facet_wrap(~cand_nm) +
+  theme(text = element_text(size=8),
+        axis.text.x = element_text(angle=45, hjust=1))
+```
+
+Looking at the Sum of donations for all candidate here is hard. Let's look at the major candidates instead, to get a better view. 
+
+#### - Distribution for candidates with 1000+ donations?
+
+For interetability purposes.
+
+Filtering donations by candidate
+
+```{r}
+#creating vector to filter for candidates with over 1000 donations
+over1000 <- c("Clinton","Sanders","Cruz","Trump","Carson","Rubio")
+
+#filtering df
+filCndDon <- subset(CandDonationsTime, cand_nm %in% over1000)
+```
+
+```{r}
+ggplot(filCndDon, aes(x = contb_receipt_dt, y = totalDonations,
+                      color=cand_nm)) + geom_line() +
+  xlab("") + ylab("Daily Donation Sum ($)") +
+  scale_x_date(date_breaks = "9 month")+
+  ylim(0,10000)+
+  facet_wrap(~cand_nm)
+```
+
+Observations:
+1) Carson had large donation totals in the beginning, and for a while was the leading fundraiser 
+2) Trump raised the majority of his donations after he won the nomination (post July 2016)
+3) CLinton consistently outrose Sanders early on, and after winning the nomination had an upward trend in donations
+4) With republican candidates other than Trump, Carson was the initial leader in fundraising, but when his numbers fell. Rubio's rose, and when Rubio's fell, Cruz's rose. Here we can see donors most likely reacting to performance in polls and primary races. Until he won the nomination, Trump was consistenly behind in fundraising among candidates
+
+
+#### - Number of Donations per major candidate over time?
+
+```{r}
+ggplot(filCndDon, aes(x = contb_receipt_dt, y = count ,
+                      color=cand_nm)) + geom_line() +
+  xlab("") + ylab("# Daily Donations") + 
+  scale_x_date(date_breaks = "9 month") + 
+  facet_wrap(~cand_nm)+ylim(0,300)
+```
+
+Observations:
+1) Among Republican candidates in the Primary, Carson had consistently higher number of donations per day, until Cruz over took him. 
+2) Number of daily donations for Trump and Clinton, the eventual Primary winners, did not pick up until the July 2016, where you see a larg spike in Trump donations and a sharp positive trend for Clinton which grew stronger over time
+3) Rubio had consistenly the lowest number of donations, save for Trump early in the primary season. This is interesting because for a time Rubio was raising large amounts, ahead of other candidates (in the chart above), hinting that his average donation was the highest amount of any candidate
+
+#### - Median Donations over time per major candidate?
+
+```{r}
+ggplot(filCndDon, aes(x = contb_receipt_dt, y = medianDonation ,
+                      color=cand_nm)) + geom_line() + xlab("") + 
+  ylab("Median Daily Donations ($)") + 
+  scale_x_date(date_breaks = "9 month")+facet_wrap(~cand_nm)
+```
+
+Observations:
+1) Rubio, as hinted at above, had days with high median amounts
+2) Clinton and Trump had donations early on that were high in median value, while carson and Sanders had days with the lowest amounts
+3) Clinton;'s median donation decrease over time, as she recieved more donations
+4) Aside from some major spikes, Cruz's median donation were mostly small amounts
+
+#### - Donations over time for Democratic Candidates
+
+I want to analyze some of the fundraising over time focusing on the democratic candidates- Clinton and Sanders. While I do not have any polling data, knowing that Clinton won (https://en.wikipedia.org/wiki/Alabama_Democratic_primary,_2016), it will be interesting to analyze with that in mind. 
+
+```{r}
+#setting a vector to filter by
+democrat <- c("Clinton","Sanders")
+
+#filtering df by democrat
+CandDonDemo <- subset(CandDonationsTime, cand_nm %in% democrat)
+
+#scale_x_date makes time-series plotting easy
+ggplot(CandDonDemo, aes(x = contb_receipt_dt, 
+                        y = totalDonations,color=cand_nm)) + 
+  geom_line() + xlab("") + ylab("Sum of Daily Donations") + 
+  scale_x_date(date_breaks = "4 month")
+```
+
+Clinton consistently outrose Sanders. You can see Sanders trend up to its peak before March 1st, when donations subsequently started falling. I would hypothesize that this has to do with his performance on Super Tuesday (March 1st). Another interesting trend is the sharp increase in July, when the Democratic Convention occured, followed by consistent increases as the General Election approached.
+
+#### - How many donations did each Democratic candidate recieve per day over time? 
+```{r}
+ggplot(CandDonDemo, aes(x = contb_receipt_dt, y = count, 
+                        color=cand_nm)) + geom_line() + 
+  xlab("") + ylab("# Daily Donations") + 
+  scale_x_date(date_breaks = "4 month") + 
+  ggtitle("Number of Donations to Democratic Candidates Over Time")
+```
+
+Looking at the donation counts, we see that Sanders was in fact comptetive with Clinton, at least in contrast for the total daily sum raised. For a period of time, Sanders ever had higher number of daily donations than Clinton did. 
+
+#### - Donations over time for Republican Candidates
+```{r}
+republican <- c("Trump","Rubio","Cruz","Carson")
+CandDonRep <- subset(CandDonationsTime, cand_nm %in% republican)
+
+ggplot(CandDonRep, aes(x = contb_receipt_dt, 
+                       y = totalDonations,color=cand_nm)) + 
+  geom_line() + xlab("") + 
+  ylab("Sum of Daily Donations ($)") + 
+  scale_x_date(date_breaks = "4 month") + 
+  ggtitle("Donation Totals to major Republican Candidates during
+          the 2016 Presidential Cycle")
+```
+
+Observations:
+1) Early on that Carson and Cruz were the early leading fundraisers
+2) Rubio had a large spike in December 2015, which seems to have also signalled the end of Carson's candicacy, as he doesn't appear to be leading at any other point
+3) Trump had a late blooming in terms of fundraising. There weren't consistently large daily sums of donations until he won the nomination between May 2016 and July 2016
+4) Late in Trumps campaigns there were consistent decrease in donation sums
+
+```{r}
+
+ggplot(CandDonRep, aes(x = contb_receipt_dt, y = count, 
+                       color=cand_nm)) + geom_line() +
+  xlab("") + ylab("# of Daily Donations ($)") +
+  scale_x_date(date_breaks = "4 month") +
+  ggtitle("Number of Donations to major Republican Candidates 
+          during the 2016 Presidential Cycle")
+
+```
+
+Here we can see a transition between candidates receiving the most donations per day, initially with Carson, then Cruz, then Trump after May 2016. A lower level of time granularity could help here.
+
+## Donation Time series by week
+
+Perhaps a bit too granular. Let's group by week.
+
+```{r}
+#ordering data frame by contribution date
+AL<- AL[order(AL$contb_receipt_dt,decreasing = FALSE)]
+
+#creating a data table that includes a created week variable
+contb_wk <- data.table(Dates = AL$contb_receipt_dt,
+                       Week = format(AL$contb_receipt_dt, format = "%W"))
+
+#creating year and week columns, in order to have keys to group by
+AL$contb_wk <- format(AL$contb_receipt_dt, format = "%W")
+AL$contb_yr <- unlist(lapply(AL$contb_receipt_dt, year))
+
+# summarizing data table grouping by year and week
+AL_Rolled <- AL %>%
+  group_by(contb_yr,contb_wk) %>%
+  summarise(count = n(),totalDonations = sum(contb_receipt_amt),
+            meanDonation = mean(contb_receipt_amt),
+            medianDonation = median(contb_receipt_amt))
+  
+# summarizing data table by year, week, and candidate
+AL_Cand_Rolled <- AL %>%
+  group_by(contb_yr,contb_wk,cand_nm) %>%
+  summarise(count = n(), 
+            totalDonations = sum(contb_receipt_amt), 
+            meanDonation = mean(contb_receipt_amt), 
+            medianDonation = median(contb_receipt_amt))
+
+# creating an index column with the year and date values concatenated for each table
+AL_Rolled$index <- as.Date.character(paste(AL_Rolled$contb_yr,
+                                           AL_Rolled$contb_wk,1,sep = "-"),
+                                     format = "%Y-%U-%u")
+
+AL_Cand_Rolled$index <- as.Date.character(paste(AL_Cand_Rolled$contb_yr,
+                                                AL_Cand_Rolled$contb_wk,1,
+                                                sep = "-"),format = "%Y-%U-%u")
+
+```
+
+
+#### - Sum of Weekly Donations 
+```{r}
+DonWeekSum <- ggplot(AL_Rolled, aes(x = index, y = totalDonations)) +
+  geom_line(color=I("#2c7fb8")) + xlab("") +
+  ylab("Sum Daily Donations ($)") + 
+  scale_x_date(date_breaks = "4 month") +
+  ggtitle("Weekly Donation Sums During the 2016 Presidential Cycle")
+
+DonWeekSum       
+```
+
+Right away, we can see how decreasing time granularity makes it easier to discern trends. We see an overall positive trend in donations sums from July 2015 to November 2016. We can also see the 2 distinct giving periods: the Primary season from July 15 to March 1st, then the General Election season from July 2016 to November 2016. Weeks in the general season had higher amounts of giving on average than weeks in the Primary season. 
+
+#### - Number of Weekly Donations 
+```{r}
+DonWeek <- ggplot(AL_Rolled, aes(x = index, y = count)) +
+  geom_line(color=I("#2c7fc9")) + 
+  xlab("") + ylab("# Daily Donations") + 
+  scale_x_date(date_breaks = "4 month") +
+  ggtitle("Number of Weekly Donations 
+          During the 2016 Presidential Election Cycle") +
+  scale_y_continuous(breaks = c(0,500,1000,1500,2000,2500),labels = scales::comma)
+
+
+DonWeek     
+```
+
+In contrast to the Sum raised by week in the previous plot, we see a clear positive trend from the beginning of the election cycle in March 2015 to November 2016. In other words, the number of donations generally increased as the Election neered. We also see some large spikes: The week of "Super Tuesday", March 1st, The Republican and Democratic Conventions (2 weeks apart in July), and the week before the election (November 1st, 2016)
+
+#### - Sum of Weekly Donations by Candidate
+```{r}
+#filtering df by candidates with over 1000 donations
+filCndWk <- subset(AL_Cand_Rolled, cand_nm %in% over1000)
+
+ggplot(filCndWk, aes(x = index, y = totalDonations , 
+                     color=factor(cand_nm))) + geom_line() + 
+  xlab("") + ylab("Sum Daily Donations($)") +
+  scale_x_date(date_breaks = "6 month") +
+  scale_fill_viridis(discrete = T)
+```
+
+While a bit of a mess, we can see how Trump and Clinton's fundraising efforts progressed during the General Election season (July 2017 on), as well as Rubio's big week in December 2015. Let's use facet wrap to make things cleaner.
+
+```{r}
+ggplot(filCndWk, aes(x = index, y = totalDonations ,
+                     color=factor(cand_nm))) + geom_line() + 
+  xlab("") + ylab("Sum Daily Donations($)") +
+  scale_x_date(date_breaks = "9 month") + 
+  facet_wrap(~cand_nm)
+```
+
+Now this is a lot cleaner. Observations:
+1) Carson started off strong compared to the other republican candidates, but soon faltered and gave way to Cruz
+2) Aside of a few big weeks, Rubio did not raise consistently higher amounts
+3) Sanders did not raise nearly as much money as Clinton at any period
+4) The majority of Trump donations occured after he had won the nomination
+
+#### - Count of Donations by major candidate per week
+```{r}
+ggplot(filCndWk, aes(x = index, y = count ,color=cand_nm)) +
+  geom_line() + xlab("") + ylab("# Weekly Donations") + 
+  facet_wrap(~cand_nm)
+```
+
+Observations:
+1) Sanders was comptetitve with Clinton on number of donations, however, and you can see his campaign gaining steam throughout the primaries, until it fell off after March 1st, the week of 12 primaries (Super Tuesday)
+2) Cruz had consistently higher amounts of donations per week than any other republican candidate in the primaries
+3) The Republican Convention was a boon for Trump's campaign, which had the highest weekly donation total of any candidate
+
+####-  Sum of Donations by Political Party per week
+```{r}
+filCndWk <- subset(AL_Cand_Rolled, cand_nm %in% over1000)
+
+#creating ggplot object
+p <- ggplot(filCndWk, aes(x = index, y = totalDonations,
+                     color= cand_nm %in% republican)) +
+  geom_line() + xlab("") +
+  ylab("Sum Weekly Donations ($)") +
+  scale_colour_manual(name = 'Republican',
+                      values = setNames(c('red','blue'),c(T, F))) +
+  ggtitle("Sum of weekly donations by party ($)")
+
+#setting legend title
+p$labels$colour <- "Republican"
+p
+
+```
+
+Republicans had consistenly higher weekly donation totals than Democrats did. 
+
+# Final Plots
+
+## 1. Total Donation Amounts of Major Candidates by Election Type
+```{r}
+CandBar
+```
+
+This is a key plot due to the following insights it reveals:
+1) During the primary season, each republican candidate (Trump, Cruz, Carson, Rubio) raised similar amounts, and Trump, the eventual General nominee, lost to Cruz by a decent margin and barely edged out Carson for second most money raised.
+2) Trump eventually won the state during the General Election, and this aligns with him raising a substantial amount more than Clinton during the General. 
+3) This answers a simpler question: which candidates raised the most money. Trump and Clinton predictably reaised the most. 
+
+## 2. Average Donation by Candidate
+```{r}
+AvgDonCand
+```
+
+Why is this plot interesting? 
+1) It shows which candidates had higher average donations. This hints at the demographics of the donors- if you make the assumption that people with higher incomes give more than people with lower incomes. 
+2) The two Democratic candidates in the race, Sanders and Clinton, had the lowest average donation amount. 
+3) Jeb Bush, who didn't make it far in the primary season, had by far the highest average donation among candidates with 100+ donations. 
+
+## 3. Weekly Donation Sums 
+```{r}
+DonWeekSum
+```
+
+This plot shows:
+1) The highest weekly amounts raised in the cycle occured during the Party Conventions in July
+2) Fundraising in the general (post July 2016) was consistently higher on a weekly basis than in the primaries
+3) Aside from a spike in December 2015 (due to a large Rubio value), the highest amount raised in the Primary season was the weeks around Super Tuesday, March 1st. As this day involved 12 primaries, it is an important day for all campaigns, and it showed here with higher donations.
+
+# Project Take-aways and Reflection 
+
+## Where did I run into difficulties?
+When analyzing a publically available datset like this, there is a very high chance it will require significant pre-processing and feature creation. This was very true here. This can be made time-consuming when you take into account domain knowledge- coming in, I didn't know much about campaign donations, as such when cleaning the data I had to ensure I knew what I was dealing with and understood what each column meant.
+
+For demographic information, there was a lot of missing or incomplete and incosistent information. For example employment title and employer made analysis of donor demographics not possible here. As such, many features that could have provided great insight were thrown away. 
+
+## Where did I find successes?
+I was able to answer my main, overarching questions, find some interesting trends, and create some very informative plots. This dataset was also ripe for time-series analysis, and I was able to get a new look at political campaigning, albeit in one out of 50 states.
+
+## How could the analysis be enriched in future work (e.g. additional data and analyses)?
+I would like to take some of the spatial data here, like cities and zipcodes, join them with outside population data, and analyze the counties/zip codes/cities that raised the most money. Another possible project would be looking at the time series data in conjunction with polling data, and seeing if future donations could be modeled based on polling data and primary scheduling.
+
