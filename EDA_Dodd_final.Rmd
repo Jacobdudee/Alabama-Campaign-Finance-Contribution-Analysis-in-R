@@ -921,7 +921,7 @@ When analyzing a publically available datset like this, there is a very high cha
 
 For demographic information, there was a lot of missing or incomplete and incosistent information. For example employment title and employer made analysis of donor demographics not possible here. As such, many features that could have provided great insight were thrown away. 
 
-## Where did I find successes?
+## Where did I find success?
 I was able to answer my main, overarching questions, find some interesting trends, and create some very informative plots. This dataset was also ripe for time-series analysis, and I was able to get a new look at political campaigning, albeit in one out of 50 states.
 
 ## How could the analysis be enriched in future work (e.g. additional data and analyses)?
